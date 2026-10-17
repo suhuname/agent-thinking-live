@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 本地 agent 工作区：项目经验库、调试截图（含本机绝对路径，不入库）
+.roo/
+
+# 运行 / 调试产物
+*.log
+data/
+out/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

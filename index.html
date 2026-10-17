@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>思考观测台 · agent-thinking-live</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <h1>思考观测台</h1>
+    <span class="sub" id="brandSub">正在连接…</span>
+  </div>
+
+  <div class="controls">
+    <div class="seg" role="tablist" aria-label="数据来源">
+      <button class="seg-btn" role="tab" data-mode="live" aria-selected="true" title="真实数据：读 state.db 的当前活跃会话">实时</button>
+      <button class="seg-btn" role="tab" data-mode="demo" aria-selected="false" title="演示：脚本化的一轮思考，流式呈现">演示</button>
+      <button class="seg-btn" role="tab" data-mode="graph" aria-selected="false" title="演示：同一轮思考，画成因果关系图谱">图谱</button>
+      <button class="seg-btn" role="tab" data-mode="neural" aria-selected="false" title="演示：同一轮思考，化成光效在神经元之间流转">神经</button>
+    </div>
+    <label>
+      <span class="sr">选择会话</span>
+      <select id="sessionSelect" disabled><option>加载会话…</option></select>
+    </label>
+    <span class="pill" id="statePill" data-state="waiting"><i aria-hidden="true"></i><span id="stateText">连接中</span></span>
+  </div>
+</header>
+
+<main class="deck">
+  <section class="col col-phases" aria-label="阶段与事实">
+    <div class="panel">
+      <h2>阶段</h2>
+      <ol class="stages" id="stages">
+        <li data-stage="think">思考 <span class="stage-time" data-time></span></li>
+        <li data-stage="tool">工具 <span class="stage-time" data-time></span></li>
+        <li data-stage="answer">回答 <span class="stage-time" data-time></span></li>
+      </ol>
+    </div>
+
+    <div class="panel">
+      <h2>本轮事实</h2>
+      <div class="session-meta">
+        <div class="title" id="sessionTitle">—</div>
+        <code id="sessionId">—</code>
+      </div>
+      <dl class="facts" id="facts">
+        <div><dt>模型</dt><dd id="factModel">—</dd></div>
+        <div><dt>消息</dt><dd id="factMessages">0</dd></div>
+        <div><dt>工具调用</dt><dd id="factTools">0</dd></div>
+        <div><dt>输入 tokens</dt><dd id="factIn">0</dd></div>
+        <div><dt>输出 tokens</dt><dd id="factOut">0</dd></div>
+        <div><dt>缓存命中</dt><dd id="factCache">0</dd></div>
+        <div><dt>已用时</dt><dd id="factElapsed">—</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="col col-stream" aria-label="思考流">
+    <div class="stream-toolbar">
+      <span class="stream-hint" id="streamHint">等待 agent 输出…</span>
+      <button class="jump" id="jumpBtn" hidden>回到底部 ↓</button>
+    </div>
+    <div class="stream" id="stream" tabindex="0" aria-live="polite">
+      <div class="empty" id="empty">
+        <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p>等待 agent 开始思考…</p>
+      </div>
+    </div>
+
+    <div class="graph-panel" id="graphPanel">
+      <div class="graph-tools">
+        <span class="graph-legend" id="graphLegend">
+          <span data-kind="user">用户</span>
+          <span data-kind="think">思考</span>
+          <span data-kind="skill">技能</span>
+          <span data-kind="call">工具</span>
+          <span data-kind="result">结果</span>
+          <span data-kind="answer">回答</span>
+        </span>
+        <button class="gbtn" id="graphReplay" type="button">重播</button>
+        <button class="gbtn" id="graphPlay" type="button">暂停</button>
+        <button class="gbtn" id="graphSpeed" type="button">×1</button>
+        <button class="gbtn" id="graphFit" type="button">适应</button>
+        <button class="gbtn is-on" id="graphFollow" type="button">跟随</button>
+      </div>
+      <canvas id="graph" aria-label="思考因果图谱"></canvas>
+      <div class="wf-tip graph-tip" id="graphTip" hidden></div>
+    </div>
+
+    <div class="neural-panel" id="neuralPanel">
+      <div class="graph-tools">
+        <span class="graph-legend" id="neuralLegend">
+          <span data-kind="user">感知</span>
+          <span data-kind="skill">技能</span>
+          <span data-kind="think">思考</span>
+          <span data-kind="call">工具</span>
+          <span data-kind="result">回传</span>
+          <span data-kind="answer">输出</span>
+        </span>
+        <button class="gbtn" id="neuralReplay" type="button">重播</button>
+        <button class="gbtn" id="neuralPlay" type="button">暂停</button>
+        <button class="gbtn" id="neuralSpeed" type="button">×1</button>
+        <button class="gbtn" id="neuralFit" type="button">适应</button>
+      </div>
+      <canvas id="neural" aria-label="思考的光效神经网络"></canvas>
+      <div class="wf-tip graph-tip neural-tip" id="neuralTip" hidden></div>
+      <aside class="neural-detail" id="neuralDetail" aria-live="polite" hidden></aside>
+    </div>
+  </section>
+
+  <aside class="col col-side" aria-label="工具与仪表">
+    <div class="panel" style="flex: 0 1 auto; max-height: 42%;">
+      <h2>工具调用</h2>
+      <ul class="tool-list" id="toolList">
+        <li class="none">本轮还没有工具调用</li>
+      </ul>
+    </div>
+
+    <div class="panel" style="flex: 1;">
+      <h2>仪表</h2>
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-row"><span>输出速率</span><b id="mRate">0<small>tok/s</small></b></div>
+          <canvas class="spark" id="sparkRate" aria-hidden="true"></canvas>
+        </div>
+        <div class="metric">
+          <div class="metric-row"><span>输出 tokens</span><b id="mOut">0</b></div>
+          <div class="bar" data-tone="answer"><i id="barOut"></i></div>
+        </div>
+        <div class="metric">
+          <div class="metric-row"><span>缓存命中率</span><b id="mCache">0<small>%</small></b></div>
+          <div class="bar"><i id="barCache"></i></div>
+          <p class="muted-note">命中部分按 ~1/120 价格计费，命中率越高单轮越省。</p>
+        </div>
+        <div class="metric">
+          <div class="metric-row"><span>推理 token 占比</span><b id="mReason">0<small>%</small></b></div>
+          <div class="bar" data-tone="tool"><i id="barReason"></i></div>
+        </div>
+        <div class="metric">
+          <div class="metric-row"><span>估算费用 (USD)</span><b id="mCost">0<small>$</small></b></div>
+          <p class="muted-note">来源：Hermes state.db 的累计计数（只读，按 Hermes 自己的定价估算）。</p>
+        </div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer class="waterfall-wrap">
+  <div class="wf-head">
+    <span class="wf-key" style="color: var(--think)"><i></i>思考</span>
+    <span class="wf-key" style="color: var(--tool)"><i></i>工具</span>
+    <span class="wf-key" style="color: var(--answer)"><i></i>回答</span>
+    <span class="wf-key" style="color: var(--fg-2)"><i></i>用户 / 系统</span>
+    <span class="spacer" id="wfRange">—</span>
+  </div>
+  <canvas id="waterfall" aria-label="消息时间轴"></canvas>
+  <div class="wf-tip" id="wfTip" hidden></div>
+</footer>
+
+<script src="js/charts.js"></script>
+<script src="js/app.js"></script>
+<script src="js/demo-common.js"></script>
+<script src="js/demo-script.js"></script>
+<script src="js/graph.js"></script>
+<script src="js/neural.js"></script>
+<script src="js/live.js"></script>
+<script src="js/real-feed.js"></script>
+<script src="js/simulator.js"></script>
+<script src="js/sim-graph.js"></script>
+<script src="js/sim-neural.js"></script>
+<script src="js/boot.js"></script>
+</body>
+</html>
