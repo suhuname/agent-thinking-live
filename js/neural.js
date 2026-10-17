@@ -2,10 +2,13 @@
    零依赖自绘 canvas（和 graph.js 同一种做法）。
 
    设计：
-   · 神经元按功能区成簇 —— 感知 / 技能 / 思考 / 运动（读文件·列目录·改文件·其它）/ 回传，
-     簇内近邻相连 + 跨区长程通路；回传拆两条回路：内环回思考区，外环回感知区
+   · 神经元按功能区套成同心球壳 —— 感知最外 / 技能 / 思考 / 运动（读·列·改·其它四条月牙）/ 回传内核，
+     读出「外界 → 思考 → 运动 → 回传」由外向内流；壳内近邻相连 + 跨壳长程通路；
+     回传拆两条回路：内环回思考区，外环回感知区
+   · 3D：世界坐标 (x,y,z) 落在球壳上，投影 = 旋转矩阵(yaw/pitch) + 透视（近大远小）；
+     远侧压暗、按深度排序绘制；每层球壳画两个大圆当线框，帮助读出体积
    · 一次事件 = 在目标区点火，光点沿突触以「距离延迟」传播；神经元有膜电位、阈值、不应期
-   · 传播带偏好（感知→思考→技能/运动四个子区→回传→再回思考/感知），所以读起来是从左流的
+   · 拖拽 = 旋转球体（Shift / 右键拖动 = 平移），滚轮缩放，「适应」回到默认视角
    · 光效三件套：放电核 / 沿突触跑的光点 / 数秒不散的余晖（这一轮走过的路）
    · 悬停只改渲染态、点击出详情卡（沿用 graph.js 的意图延迟 + 迟滞，避免爆闪与自激） */
 
@@ -44,16 +47,35 @@ window.AgentNeural = (() => {
     answer: { zone: "out", color: "--answer", label: "回答", r: 6.6 },
   };
 
-  /* 世界坐标里的功能区（椭圆分布）：横向从感知流到回传，运动区在右侧竖排四个子区 */
-  const LAYOUT = {
-    sense: { cx: -620, cy: 30, rx: 92, ry: 212, n: 34, gap: 21 },
-    skill: { cx: -90, cy: -420, rx: 166, ry: 54, n: 14, gap: 24 },
-    think: { cx: -55, cy: 20, rx: 330, ry: 212, n: 148, gap: 24 },
-    read: { cx: 468, cy: -300, rx: 88, ry: 50, n: 20, gap: 22 },
-    list: { cx: 468, cy: -172, rx: 88, ry: 50, n: 20, gap: 22 },
-    edit: { cx: 468, cy: -44, rx: 88, ry: 50, n: 20, gap: 22 },
-    other: { cx: 468, cy: 84, rx: 88, ry: 50, n: 20, gap: 22 },
-    out: { cx: 468, cy: 252, rx: 104, ry: 66, n: 26, gap: 22 },
+  /* 世界坐标里的同心球壳：半径按层级由外到内 —— 感知 1.0 → 技能 0.8 → 思考 0.62 → 运动 0.44 → 回传 0.24 */
+  const R0 = 360; // 最外层半径（世界单位）
+  const SHELL = {
+    sense: { r: 1.0, n: 34 },
+    skill: { r: 0.8, n: 14 },
+    think: { r: 0.62, n: 148 },
+    // 运动区四个子区贴同一层球壳，按方位角切成四条等面积的月牙（lune = 起始方位角，单位度）
+    read: { r: 0.44, n: 20, lune: 0 },
+    list: { r: 0.44, n: 20, lune: 90 },
+    edit: { r: 0.44, n: 20, lune: 180 },
+    other: { r: 0.44, n: 20, lune: 270 },
+    out: { r: 0.24, n: 26 },
+  };
+
+  /* 区名按球壳半径排一圈：同心层里"方向"没有语义，"第几层"才是含义，
+     所以名字钉在各自圆盘的边上（不跟旋转跑），永远不挤到球心；
+     ang = 屏幕极角（度，0°=右、90°=下），r = 该壳半径占外层的比例 */
+  const LABEL_RING = {
+    sense: { ang: 200, r: 1.0 },
+    skill: { ang: 310, r: 0.8 },
+    think: { ang: 166, r: 0.62 },
+    out: { ang: 90, r: 0.24 },
+  };
+  const MOTOR_RING = {
+    group: { ang: 286, r: 0.44 },
+    read: { ang: 330, r: 0.44 },
+    list: { ang: 358, r: 0.44 },
+    edit: { ang: 22, r: 0.44 },
+    other: { ang: 50, r: 0.44 },
   };
 
   /* 传播偏好：从哪里来，往哪里去更像"思考的流向" */
@@ -61,10 +83,10 @@ window.AgentNeural = (() => {
     sense: ["think", "skill"],
     skill: ["think"],
     think: ["read", "list", "edit", "other", "think", "out"],
-    read: ["out", "think"],
-    list: ["out", "think"],
-    edit: ["out", "think"],
-    other: ["out", "think"],
+    read: ["out", "think", "list"],
+    list: ["out", "think", "edit"],
+    edit: ["out", "think", "other"],
+    other: ["out", "think", "read"],
     out: ["think", "sense"], // 内环先回思考区，外环再送去感知区
   };
 
@@ -95,6 +117,8 @@ window.AgentNeural = (() => {
     fires: 0,
     order: 0,
     scale: 1,
+    yaw: -0.44, // 偏航（绕 Y 轴）
+    pitch: 0.3, // 俯仰（绕 X 轴）
     panX: 0,
     panY: 0,
     dirty: true,
@@ -121,7 +145,7 @@ window.AgentNeural = (() => {
     return `rgba(${r},${g},${b},${a})`;
   };
   const esc = (s) =>
-    String(s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    String(s || "").replace(/[&<>\"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
   function readCss() {
     const g = getComputedStyle(document.documentElement);
@@ -150,9 +174,49 @@ window.AgentNeural = (() => {
 
   const originY = (h) => h / 2 + 12;
 
-  function toScreen(n, w, h) {
-    return [n.x * S.scale + S.panX + w / 2, n.y * S.scale + S.panY + originY(h)];
+  /* ---------- 3D → 屏幕：先按 yaw/pitch 旋转，再走透视（近大远小） ---------- */
+
+  const CAM_D = 2400; // 相机到球心的距离（对 R0=360：近端放大约 16%，远端缩小约 13%，有体积又不夸张）
+
+  function projectPoint(x, y, z) {
+    const cy = Math.cos(S.yaw), sy = Math.sin(S.yaw);
+    const cp = Math.cos(S.pitch), sp = Math.sin(S.pitch);
+    const x1 = x * cy + z * sy; // 绕 Y 轴（偏航）
+    const z1 = -x * sy + z * cy;
+    const y2 = y * cp - z1 * sp; // 绕 X 轴（俯仰）
+    const z2 = y * sp + z1 * cp;
+    const s = CAM_D / (CAM_D - clamp(z2, -CAM_D * 0.8, CAM_D * 0.8));
+    return { x: x1 * s, y: -y2 * s, s, d: z2 }; // 世界 y 朝上，屏幕 y 朝下；d>0 表示更靠前
   }
+
+  /* 远侧压暗：d 从 -R0 到 +R0 映射成 0.34 → 1 */
+  const depthFade = (d) => 0.34 + 0.66 * clamp((d / R0 + 1) / 2, 0, 1);
+
+  const norm3 = (v) => {
+    const l = Math.hypot(v[0], v[1], v[2]) || 1;
+    return [v[0] / l, v[1] / l, v[2] / l];
+  };
+  const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+
+  /* 球面均匀撒点（Fibonacci 螺旋：不用拒绝采样，间距天然均匀） */
+  function fibPoint(i, n) {
+    const ga = Math.PI * (3 - Math.sqrt(5));
+    const y = 1 - (2 * (i + 0.5)) / n;
+    const rad = Math.sqrt(Math.max(0, 1 - y * y));
+    const th = ga * i;
+    return [Math.cos(th) * rad, y, Math.sin(th) * rad];
+  }
+
+  function toScreen(n, w, h) {
+    const p = projectPoint(n.x, n.y, n.z);
+    n._d = p.d;
+    n._s = p.s;
+    n._sx = p.x * S.scale + S.panX + w / 2;
+    n._sy = p.y * S.scale + S.panY + originY(h);
+    return [n._sx, n._sy];
+  }
+
+  const toPx = (p, w, h) => [p.x * S.scale + S.panX + w / 2, p.y * S.scale + S.panY + originY(h)];
 
   /* ---------- 拓扑 ---------- */
 
@@ -162,21 +226,39 @@ window.AgentNeural = (() => {
     S.zoneIndex = {};
     S.cursors = {};
     let id = 0;
-    Object.entries(LAYOUT).forEach(([zone, box]) => {
+    Object.entries(SHELL).forEach(([zone, box]) => {
       const placed = [];
-      let guard = 0;
-      while (placed.length < box.n && guard < box.n * 80) {
-        guard++;
-        const a = Math.random() * Math.PI * 2;
-        const rr = Math.sqrt(Math.random());
-        const x = box.cx + Math.cos(a) * rr * box.rx;
-        const y = box.cy + Math.sin(a) * rr * box.ry;
-        if (placed.some((p) => Math.hypot(p.x - x, p.y - y) < box.gap)) continue;
+      const spacing = Math.sqrt((4 * Math.PI) / box.n); // 大致角间距，用来定抖动幅度
+      const jitter = spacing * 0.34;
+      for (let i = 0; i < box.n; i++) {
+        let u;
+        if (box.lune != null) {
+          // 四条月牙：同一层球壳按方位角各占 90°，仰角按等面积分层
+          const cols = 4;
+          const rows = Math.max(2, Math.round(box.n / cols));
+          const yi = i % rows;
+          const ai = Math.floor(i / rows);
+          const uy = -1 + (2 * (yi + 0.5)) / rows;
+          const rad = Math.sqrt(Math.max(0, 1 - uy * uy));
+          const az = ((box.lune + ((ai + 0.5) / cols) * 90) * Math.PI) / 180;
+          u = [Math.cos(az) * rad, uy, Math.sin(az) * rad];
+        } else {
+          u = fibPoint(i, box.n);
+        }
+        u = norm3([
+          u[0] + (Math.random() - 0.5) * jitter * 2,
+          u[1] + (Math.random() - 0.5) * jitter * 2,
+          u[2] + (Math.random() - 0.5) * jitter * 2,
+        ]);
+        // 球壳带一点厚度：看着是球体而不是球面上的一张纸；回传内核更厚一点
+        const thick = zone === "out" ? 0.22 : 0.05;
+        const rr = box.r * (1 + (Math.random() - 0.5) * thick) * R0;
         const n = {
           id: "n" + id++,
           zone,
-          x,
-          y,
+          x: u[0] * rr,
+          y: u[1] * rr,
+          z: u[2] * rr,
           r: KIND[Object.keys(KIND).find((k) => KIND[k].zone === zone)]?.r || 4.6,
           m: 0,
           refrUntil: -1,
@@ -188,13 +270,17 @@ window.AgentNeural = (() => {
           inHop: 0,
           info: null,
           neighbors: [],
+          _d: 0,
+          _s: 1,
+          _sx: 0,
+          _sy: 0,
         };
         n.r = n.r + Math.random() * 0.7;
         placed.push(n);
         S.nodes.push(n);
         S.index.set(n.id, n);
       }
-      S.zoneIndex[zone] = placed.slice().sort((p, q) => p.y - q.y || p.x - q.x);
+      S.zoneIndex[zone] = placed.slice().sort((p, q) => p.y - q.y || p.z - q.z);
       S.cursors[zone] = 0;
     });
   }
@@ -214,16 +300,16 @@ window.AgentNeural = (() => {
       b.neighbors.push({ id: a.id, w: e.w, edge: e });
     };
 
-    // 簇内近邻（每颗接最近 3 颗）
+    // 壳内近邻（每颗接最近的 3 颗）
     S.nodes.forEach((n) => {
       const sib = S.zoneIndex[n.zone].filter((o) => o !== n);
       sib
-        .sort((p, q) => Math.hypot(p.x - n.x, p.y - n.y) - Math.hypot(q.x - n.x, q.y - n.y))
+        .sort((p, q) => dist3(p, n) - dist3(q, n))
         .slice(0, 3)
         .forEach((o) => push(n, o, 0.4 + Math.random() * 0.45));
     });
 
-    // 跨区通路：[源区, 目标区, 每颗源神经元的连线数(或概率), 基础权重]
+    // 跨壳通路：[源区, 目标区, 每颗源神经元的连线数(或概率), 基础权重]
     const roads = [
       ["sense", "think", 2, 0.68],
       ["skill", "think", 3, 0.94],
@@ -232,7 +318,12 @@ window.AgentNeural = (() => {
       ["think", "edit", 0.14, 0.74],
       ["think", "other", 0.1, 0.7],
       ["think", "think", 0.02, 0.42],
-      // 四个子区各自把结果送到回传区
+      // 四条月牙首尾相接，让运动层是一整圈而不是四块孤岛
+      ["read", "list", 0.4, 0.42],
+      ["list", "edit", 0.4, 0.42],
+      ["edit", "other", 0.4, 0.42],
+      ["other", "read", 0.4, 0.42],
+      // 四个子区各自把结果送回内核
       ["read", "out", 1, 0.62],
       ["list", "out", 1, 0.62],
       ["edit", "out", 1, 0.62],
@@ -276,7 +367,7 @@ window.AgentNeural = (() => {
   const clock = () => S.vnow;
 
   function trail(n, t) {
-    S.trails.push({ x: n.x, y: n.y, t, amp: n.fireAmp, color: n.fireColor });
+    S.trails.push({ x: n.x, y: n.y, z: n.z, t, amp: n.fireAmp, color: n.fireColor });
     if (S.trails.length > 700) S.trails.splice(0, S.trails.length - 700);
   }
 
@@ -313,7 +404,7 @@ window.AgentNeural = (() => {
 
     const take = 1 + (amp > 0.85 ? 1 : 0) + (amp > 1.35 ? 1 : 0);
     outs.slice(0, take).forEach((e) => {
-      const dist = Math.hypot(e.to.x - n.x, e.to.y - n.y);
+      const dist = dist3(e.to, n);
       S.spikes.push({
         a: n.id,
         b: e.id,
@@ -429,7 +520,7 @@ window.AgentNeural = (() => {
       detail.hidden = true;
       detail.innerHTML = "";
     }
-    fit();
+    fit(true);
   }
 
   /* ---------- 动力学 ---------- */
@@ -531,6 +622,98 @@ window.AgentNeural = (() => {
     ctx.globalAlpha = 1;
   }
 
+  /* 每层球壳的唯一半径（运动区四条月牙共用一层，只画一次线框） */
+  const SHELLS_R = (() => {
+    const seen = new Map();
+    Object.entries(SHELL).forEach(([zone, box]) => {
+      const key = box.r.toFixed(3);
+      if (!seen.has(key)) seen.set(key, { r: box.r, zone });
+    });
+    return [...seen.values()].sort((a, b) => b.r - a.r);
+  })();
+
+  /* 一个大圆的屏幕路径。前半球/后半球分两条 Path2D：前面的亮一倍，体积感就出来了 */
+  function ringPath(R, axis, sc, w, h) {
+    const N = 64;
+    const front = new Path2D();
+    const back = new Path2D();
+    let prevSide = 0;
+    for (let i = 0; i <= N; i++) {
+      const ang = (i / N) * Math.PI * 2;
+      const c = Math.cos(ang) * R;
+      const s = Math.sin(ang) * R;
+      const p = axis === 0 ? projectPoint(c, 0, s) : axis === 1 ? projectPoint(0, c, s) : projectPoint(c, s, 0);
+      const x = p.x * sc + S.panX + w / 2;
+      const y = p.y * sc + S.panY + originY(h);
+      const side = p.d >= 0 ? 1 : -1;
+      const path = side > 0 ? front : back;
+      if (i === 0 || side !== prevSide) path.moveTo(x, y);
+      else path.lineTo(x, y);
+      prevSide = side;
+    }
+    return { front, back };
+  }
+
+  function drawShells(ctx, w, h) {
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineWidth = 1;
+    SHELLS_R.forEach(({ r, zone }, idx) => {
+      const hex = css[zone] || css.think;
+      const R = r * R0;
+      // 最外层多画一条正对镜头的大圆，球面感更明确；内层两条就够，不然糊成毛球
+      const axes = idx === 0 ? [0, 1, 2] : [0, 1];
+      axes.forEach((axis) => {
+        const { front, back } = ringPath(R, axis, S.scale, w, h);
+        ctx.strokeStyle = rgba(hex, 0.14);
+        ctx.stroke(front);
+        ctx.strokeStyle = rgba(hex, 0.06);
+        ctx.stroke(back);
+      });
+    });
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function labelPill(ctx, text, x, y, hex, alpha, align = "center", font = "11px ui-monospace, monospace") {
+    if (alpha <= 0.03) return;
+    ctx.font = font;
+    const tw = ctx.measureText(text).width;
+    const bx = align === "center" ? x - tw / 2 : align === "right" ? x - tw : x;
+    ctx.fillStyle = "rgba(8,9,11,0.58)";
+    ctx.beginPath();
+    ctx.roundRect(bx - 5, y - 10, tw + 10, 15, 3);
+    ctx.fill();
+    ctx.fillStyle = rgba(hex, alpha);
+    ctx.textAlign = align;
+    ctx.fillText(text, x, y + 1);
+    ctx.textAlign = "left";
+  }
+
+  /* 名字钉在球壳圆盘的边上：半径本身就说明了它在第几层，方向随旋转跑反而会挤成一团 */
+  function ringLabel(ctx, w, h, text, angDeg, radiusWorld, hex, alphaBase, align = "center", font = "11px ui-monospace, monospace") {
+    const a = (angDeg * Math.PI) / 180;
+    const R = radiusWorld * S.scale * 1.05;
+    const x = w / 2 + S.panX + Math.cos(a) * R;
+    const y = originY(h) + S.panY + Math.sin(a) * R;
+    labelPill(ctx, text, x, y, hex, alphaBase, align, font);
+  }
+
+  function drawZoneLabels(ctx, w, h) {
+    Object.entries(LABEL_RING).forEach(([zone, cfg]) => {
+      ringLabel(ctx, w, h, ZONES[zone].label, cfg.ang, cfg.r * R0, css[zone], 0.8);
+    });
+    // 运动区：组标题 + 四条月牙各自的名字，沿这层圆盘的右半边排开（竖间距 45px 左右）
+    ringLabel(ctx, w, h, "运 动 区", MOTOR_RING.group.ang, MOTOR_RING.group.r * R0, css.other, 0.85);
+    MOTOR_ZONES.forEach((zone) => {
+      const cfg = MOTOR_RING[zone];
+      ringLabel(ctx, w, h, ZONES[zone].label, cfg.ang, cfg.r * R0, css[zone], 0.74);
+    });
+  }
+
+  /* 突触中点往外推多少：短边弯得明显一点，长边几乎笔直 */
+  function arcBow(len) {
+    return 1 + (0.055 * R0) / Math.max(40, len);
+  }
+
   function draw() {
     if (!canvas) return;
     const { w, h } = fitCanvas();
@@ -541,134 +724,109 @@ window.AgentNeural = (() => {
     const t = clock();
     const sc = S.scale;
 
-    // 区域薄雾 + 区域名
-    ctx.globalCompositeOperation = "lighter";
-    Object.entries(LAYOUT).forEach(([zone, box]) => {
-      const [cx, cy] = [box.cx * sc + S.panX + w / 2, box.cy * sc + S.panY + originY(h)];
-      const R = Math.max(box.rx, box.ry) * sc * 1.35;
-      if (R < 4) return;
-      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
-      g.addColorStop(0, rgba(css[zone], 0.075));
-      g.addColorStop(1, rgba(css[zone], 0));
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, box.rx * sc * 1.3, box.ry * sc * 1.25, 0, 0, Math.PI * 2);
-      ctx.fill();
-    });
-    ctx.globalCompositeOperation = "source-over";
+    // 每帧先把全部神经元投影一次：突触、光点、命中拾取都复用这组屏幕坐标
+    for (const n of S.nodes) toScreen(n, w, h);
 
-    ctx.font = "11px ui-monospace, monospace";
+    drawShells(ctx, w, h);
+    drawZoneLabels(ctx, w, h);
 
-    /* 区名一律垫一层深色底：回传回路的长线会从区名附近穿过，不垫底会被光点糊住 */
-    const labelAt = (text, wx, wy, hex, alpha, align = "center", font = "11px ui-monospace, monospace") => {
-      const x = wx * sc + S.panX + w / 2;
-      const y = wy * sc + S.panY + originY(h);
-      ctx.font = font;
-      const tw = ctx.measureText(text).width;
-      const bx = align === "center" ? x - tw / 2 : align === "right" ? x - tw : x;
-      ctx.fillStyle = "rgba(8,9,11,0.58)";
-      ctx.beginPath();
-      ctx.roundRect(bx - 5, y - 10, tw + 10, 15, 3);
-      ctx.fill();
-      ctx.fillStyle = rgba(hex, alpha);
-      ctx.textAlign = align;
-      ctx.fillText(text, x, y + 1);
-      ctx.textAlign = "left";
-    };
-
-    Object.entries(LAYOUT).forEach(([zone, box]) => {
-      if (ZONES[zone].group) return; // 运动区子区标签贴到各自簇的右边（见下）
-      labelAt(ZONES[zone].label, box.cx, box.cy - box.ry - 26, css[zone], 0.72);
-    });
-
-    /* 运动区：四个子区竖排成一组，组标题 + 每个子区标签都放在不挡光线的位置 */
-    const box = LAYOUT.read;
-    labelAt("运 动 区", box.cx, box.cy - box.ry - 44, css.other, 0.85);
-    MOTOR_ZONES.forEach((zone) => {
-      const b = LAYOUT[zone];
-      labelAt(ZONES[zone].label, b.cx + b.rx + 16, b.cy + 4, css[zone], 0.7, "left");
-    });
-
-    /* 回传区：把两条回路写在区名下面 */
-    const o = LAYOUT.out; // 区名由上面的循环画，这里只补充两条回路的说明
-    labelAt("内环 → 思考区 · 外环 → 感知区", o.cx, o.cy + o.ry + 26, css.out, 0.55, "center", "10px ui-monospace, monospace");
-
-    // 突触
+    /* 突触：按深度排序，远的先画、更淡；中点从球心往外推一点，弯成绕球的弧 */
+    const arcs = [];
     for (const e of S.edges) {
       const a = S.index.get(e.a);
       const b = S.index.get(e.b);
       if (!a || !b) continue;
-      const [ax, ay] = toScreen(a, w, h);
-      const [bx, by] = toScreen(b, w, h);
+      const mid = [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
+      const len = Math.hypot(mid[0], mid[1], mid[2]) || 1;
+      const bow = arcBow(len);
+      const m = projectPoint(mid[0] * bow, mid[1] * bow, mid[2] * bow);
+      const [mx, my] = toPx(m, w, h);
+      arcs.push({ e, a, b, mx, my, d: (a._d + b._d + m.d) / 3 });
+    }
+    arcs.sort((p, q) => p.d - q.d);
+
+    for (const { e, a, b, mx, my, d } of arcs) {
       const hot = Math.max(
-        clamp((t - a.fireAt) < 900 ? 1 - (t - a.fireAt) / 900 : 0, 0, 1) + Math.min(1.1, a.m * 0.5),
-        clamp((t - b.fireAt) < 900 ? 1 - (t - b.fireAt) / 900 : 0, 0, 1) + Math.min(1.1, b.m * 0.5)
+        clamp(t - a.fireAt < 900 ? 1 - (t - a.fireAt) / 900 : 0, 0, 1) + Math.min(1.1, a.m * 0.5),
+        clamp(t - b.fireAt < 900 ? 1 - (t - b.fireAt) / 900 : 0, 0, 1) + Math.min(1.1, b.m * 0.5)
       );
-      let alpha = 0.035 + e.w * 0.055 + Math.min(0.34, hot * 0.2) + e.act * 0.22;
       // 回传回路用自己的颜色，并且更显眼（内环=思考青，外环=感知灰）
       const strokeKey = e.circuit === "inner" ? "think" : e.circuit === "outer" ? "sense" : a.zone;
-      if (e.circuit) alpha = Math.min(0.42, alpha * 1.5 + 0.02);
-      if (alpha < 0.045) continue;
+      let alpha = (0.03 + e.w * 0.05 + Math.min(0.32, hot * 0.2) + e.act * 0.2) * depthFade(d);
+      if (e.circuit) alpha = Math.min(0.4, alpha * 1.5 + 0.02);
+      if (alpha < 0.026) continue;
       ctx.strokeStyle = rgba(css[strokeKey] || css.think, alpha);
-      ctx.lineWidth = 0.7 + e.w * 0.5 + e.act * 0.7 + (e.circuit ? 0.3 : 0);
+      ctx.lineWidth = 0.6 + e.w * 0.45 + e.act * 0.7 + (e.circuit ? 0.3 : 0);
       ctx.beginPath();
-      const mx = (ax + bx) / 2 - (by - ay) * 0.09;
-      const my = (ay + by) / 2 + (bx - ax) * 0.09;
-      ctx.moveTo(ax, ay);
-      ctx.quadraticCurveTo(mx, my, bx, by);
+      ctx.moveTo(a._sx, a._sy);
+      ctx.quadraticCurveTo(mx, my, b._sx, b._sy);
       ctx.stroke();
     }
 
-    // 余晖：这一轮走过的路（数秒不散）
+    /* 余晖：这一轮走过的路（数秒不散） */
     ctx.globalCompositeOperation = "lighter";
     for (const p of S.trails) {
       const age = (t - p.t) / TRAIL_MS;
       if (age >= 1 || age < 0) continue;
-      const [x, y] = [p.x * sc + S.panX + w / 2, p.y * sc + S.panY + originY(h)];
-      glowAt(ctx, x, y, 26 * (0.7 + p.amp) * (0.5 + age * 0.6), colorKeyOf(p.color), p.amp * (1 - age) * 0.34);
+      const pr = projectPoint(p.x, p.y, p.z);
+      const [x, y] = toPx(pr, w, h);
+      glowAt(
+        ctx,
+        x,
+        y,
+        24 * (0.7 + p.amp) * (0.5 + age * 0.6) * pr.s,
+        colorKeyOf(p.color),
+        p.amp * (1 - age) * 0.34 * depthFade(pr.d)
+      );
     }
 
-    // 在途光点
+    /* 在途光点：沿同一条 3D 弧插值再逐点投影，才不会和画出来的突触错位 */
     for (const sp of S.spikes) {
       if (t < sp.t0) continue;
-      const p = clamp((t - sp.t0) / sp.dur, 0, 1);
+      const k = clamp((t - sp.t0) / sp.dur, 0, 1);
       const a = S.index.get(sp.a);
       const b = S.index.get(sp.b);
       if (!a || !b) continue;
-      const [ax, ay] = toScreen(a, w, h);
-      const [bx, by] = toScreen(b, w, h);
-      const mx = (ax + bx) / 2 - (by - ay) * 0.09;
-      const my = (ay + by) / 2 + (bx - ax) * 0.09;
-      const mt = 1 - p;
-      const x = mt * mt * ax + 2 * mt * p * mx + p * p * bx;
-      const y = mt * mt * ay + 2 * mt * p * my + p * p * by;
-      glowAt(ctx, x, y, 13 + sp.amp * 17, colorKeyOf(sp.color), 0.55 + sp.amp * 0.4);
+      const bow = arcBow(Math.hypot((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2) || 1);
+      const mx3 = ((a.x + b.x) / 2) * bow;
+      const my3 = ((a.y + b.y) / 2) * bow;
+      const mz3 = ((a.z + b.z) / 2) * bow;
+      const mt = 1 - k;
+      const x3 = mt * mt * a.x + 2 * mt * k * mx3 + k * k * b.x;
+      const y3 = mt * mt * a.y + 2 * mt * k * my3 + k * k * b.y;
+      const z3 = mt * mt * a.z + 2 * mt * k * mz3 + k * k * b.z;
+      const pr = projectPoint(x3, y3, z3);
+      const [x, y] = toPx(pr, w, h);
+      glowAt(ctx, x, y, (11 + sp.amp * 16) * pr.s, colorKeyOf(sp.color), (0.5 + sp.amp * 0.4) * depthFade(pr.d));
     }
     ctx.globalCompositeOperation = "source-over";
 
-    // 神经元
-    for (const n of S.nodes) {
-      const [x, y] = toScreen(n, w, h);
+    /* 神经元：远的先画、压暗缩小，近的压在上面 */
+    const ordered = S.nodes.slice().sort((p, q) => p._d - q._d);
+    for (const n of ordered) {
+      const x = n._sx;
+      const y = n._sy;
+      const fade = depthFade(n._d);
       const base = css[n.zone];
       const since = t - n.fireAt;
       const flash = since >= 0 && since < 760 ? 1 - since / 760 : 0;
       const hot = clamp(n.m, 0, 1.5);
-      const r = n.r * sc;
+      const r = n.r * sc * n._s;
 
       // 核
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = rgba(base, 0.2 + hot * 0.45 + flash * 0.5);
+      ctx.fillStyle = rgba(base, (0.16 + hot * 0.45 + flash * 0.5) * fade);
       ctx.fill();
-      ctx.lineWidth = n.info ? 1.25 : 1;
-      ctx.strokeStyle = rgba(base, 0.34 + hot * 0.4 + flash * 0.5);
+      ctx.lineWidth = n.info ? 1.2 : 0.9;
+      ctx.strokeStyle = rgba(base, (0.3 + hot * 0.4 + flash * 0.5) * fade);
       ctx.stroke();
 
       // 膜电位环：攒到阈值就放
       if (hot > 0.06) {
         ctx.beginPath();
-        ctx.arc(x, y, r * (1.55 + hot * 1.7), 0, Math.PI * 2);
-        ctx.strokeStyle = rgba(colorHex(n.inColor) || base, hot * 0.3);
+        ctx.arc(x, y, r * (1.5 + hot * 1.7), 0, Math.PI * 2);
+        ctx.strokeStyle = rgba(colorHex(n.inColor) || base, hot * 0.28 * fade);
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -677,7 +835,7 @@ window.AgentNeural = (() => {
       if (flash > 0) {
         ctx.beginPath();
         ctx.arc(x, y, r * (1.5 + (1 - flash) * 3.6), 0, Math.PI * 2);
-        ctx.strokeStyle = rgba(colorHex(n.fireColor) || base, flash * 0.5);
+        ctx.strokeStyle = rgba(colorHex(n.fireColor) || base, flash * 0.45 * fade);
         ctx.lineWidth = 1.1;
         ctx.stroke();
       }
@@ -685,7 +843,14 @@ window.AgentNeural = (() => {
       // 光晕
       if (hot > 0.02 || flash > 0) {
         ctx.globalCompositeOperation = "lighter";
-        glowAt(ctx, x, y, r * (4 + hot * 2.4 + flash * 2), colorKeyOf(n.fireColor || n.inColor || base), hot * 0.28 + flash * 0.55);
+        glowAt(
+          ctx,
+          x,
+          y,
+          r * (4 + hot * 2.4 + flash * 2),
+          colorKeyOf(n.fireColor || n.inColor || base),
+          (hot * 0.28 + flash * 0.55) * fade
+        );
         ctx.globalCompositeOperation = "source-over";
       }
 
@@ -722,7 +887,10 @@ window.AgentNeural = (() => {
       h - 12
     );
     ctx.textAlign = "right";
-    ctx.fillText("悬停看简写 · 点击看详情 · 滚轮缩放 · 拖动平移", w - 10, h - 12);
+    ctx.fillText("拖动旋转 · Shift+拖动平移 · 滚轮缩放 · 悬停看简写 · 点击看详情", w - 10, h - 12);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,0.26)";
+    ctx.fillText("同心球壳：感知最外 → 思考 → 运动 → 回传内核（内环回思考 · 外环回感知）", w / 2, h - 12);
     ctx.textAlign = "left";
   }
 
@@ -740,23 +908,16 @@ window.AgentNeural = (() => {
 
   /* ---------- 相机 ---------- */
 
-  function fit() {
+  function fit(resetRotation = true) {
     if (!canvas || !S.nodes.length) return;
     const { w, h } = fitCanvas();
-    const xs = S.nodes.map((n) => n.x);
-    const ys = S.nodes.map((n) => n.y);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-    const padX = 110;
-    const padTop = 96;
-    const padBottom = 64;
-    const spanX = maxX - minX + padX * 2;
-    const spanY = maxY - minY + padTop + padBottom;
-    S.scale = clamp(Math.min(w / spanX, h / spanY), 0.24, 1.5);
-    S.panX = -((minX + maxX) / 2) * S.scale;
-    S.panY = -((minY + maxY) / 2) * S.scale - (padTop - padBottom) / 2;
+    if (resetRotation) {
+      S.yaw = -0.44;
+      S.pitch = 0.3;
+    }
+    S.scale = clamp(Math.min(w / (2 * R0 + 300), h / (2 * R0 + 240)), 0.2, 3.2);
+    S.panX = 0;
+    S.panY = 0;
     S.dirty = true;
   }
 
@@ -766,14 +927,17 @@ window.AgentNeural = (() => {
     const sx = clientX - rect.left;
     const sy = clientY - rect.top;
     let best = null;
-    let bestD = Infinity;
+    let bestScore = Infinity;
     for (const n of S.nodes) {
-      const [x, y] = toScreen(n, w, h);
-      const d = Math.hypot(x - sx, y - sy);
-      const rr = Math.max(7, n.r * S.scale + 7);
-      if (d < rr && d < bestD) {
+      toScreen(n, w, h);
+      const d = Math.hypot(n._sx - sx, n._sy - sy);
+      const rr = Math.max(6, n.r * S.scale * n._s + 6);
+      if (d > rr) continue;
+      // 屏幕上一样近时优先选靠前的，否则会点到被挡住的远侧神经元
+      const score = d - (n._d / R0) * 7;
+      if (score < bestScore) {
+        bestScore = score;
         best = n;
-        bestD = d;
       }
     }
     return best;
@@ -909,22 +1073,25 @@ window.AgentNeural = (() => {
       "wheel",
       (e) => {
         e.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const { w, h } = fitCanvas();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const wx = (sx - S.panX - w / 2) / S.scale;
-        const wy = (sy - S.panY - originY(h)) / S.scale;
         S.scale = clamp(S.scale * (e.deltaY > 0 ? 0.92 : 1.08), 0.2, 3.2);
-        S.panX = sx - w / 2 - wx * S.scale;
-        S.panY = sy - originY(h) - wy * S.scale;
         S.dirty = true;
       },
       { passive: false }
     );
 
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
     canvas.addEventListener("pointerdown", (e) => {
-      S.dragging = { x: e.clientX, y: e.clientY, panX: S.panX, panY: S.panY, moved: false };
+      S.dragging = {
+        x: e.clientX,
+        y: e.clientY,
+        panMode: e.shiftKey || e.button === 2 || e.button === 1, // Shift / 右键 / 中键 = 平移，其余 = 旋转
+        panX: S.panX,
+        panY: S.panY,
+        yaw: S.yaw,
+        pitch: S.pitch,
+        moved: false,
+      };
       try {
         canvas.setPointerCapture(e.pointerId);
       } catch (_) {
@@ -940,8 +1107,15 @@ window.AgentNeural = (() => {
         const dx = e.clientX - S.dragging.x;
         const dy = e.clientY - S.dragging.y;
         if (Math.abs(dx) + Math.abs(dy) > 3) S.dragging.moved = true;
-        S.panX = S.dragging.panX + dx;
-        S.panY = S.dragging.panY + dy;
+        if (S.dragging.panMode) {
+          S.panX = S.dragging.panX + dx;
+          S.panY = S.dragging.panY + dy;
+        } else {
+          // 拖动 = 把球拧过去（像转一颗地球仪），跟手的方向一致
+          S.yaw = S.dragging.yaw + dx * 0.0062;
+          S.pitch = clamp(S.dragging.pitch + dy * 0.0062, -1.35, 1.35);
+          S.dirty = true;
+        }
         return;
       }
       // 一帧只处理最后一次移动；兜底 setTimeout（后台标签 rAF 不跑，本项目老坑）
@@ -974,7 +1148,8 @@ window.AgentNeural = (() => {
       if (S.hover) setHover(null);
     });
 
-    window.addEventListener("resize", () => fit());
+    // 窗口尺寸变化只重算缩放与居中，别把用户转好的角度拧回去
+    window.addEventListener("resize", () => fit(false));
   }
 
   /* ---------- 主循环（setInterval：后台标签 rAF 会冻帧） ---------- */
@@ -983,9 +1158,11 @@ window.AgentNeural = (() => {
 
   function sig() {
     const { w, h } = fitCanvas();
-    return `${w}x${h}|${S.scale.toFixed(3)}|${Math.round(S.panX)}|${Math.round(S.panY)}|${
-      S.hover ? S.hover.id : "-"
-    }|${S.selected || "-"}|${S.vnow.toFixed(0)}|${S.spikes.length}|${S.trails.length}`;
+    return `${w}x${h}|${S.scale.toFixed(3)}|${Math.round(S.panX)}|${Math.round(S.panY)}|${S.yaw.toFixed(
+      3
+    )}|${S.pitch.toFixed(3)}|${S.hover ? S.hover.id : "-"}|${S.selected || "-"}|${S.vnow.toFixed(0)}|${
+      S.spikes.length
+    }|${S.trails.length}`;
   }
 
   function loop() {
@@ -999,7 +1176,7 @@ window.AgentNeural = (() => {
         lastSig = sig();
         return;
       }
-      // 冻结（暂停 / 播完）：画面签名没变就不重绘
+      // 冻结（暂停 / 播完）：画面签名没变就不重绘；但用户转球时 yaw/pitch 变了，签名会变
       const cur = sig();
       if (cur === lastSig && !S.dirty) return;
       S.dirty = false;
@@ -1016,7 +1193,7 @@ window.AgentNeural = (() => {
     buildNodes();
     buildEdges();
     bind();
-    fit();
+    fit(true);
     loop();
   }
 
@@ -1065,6 +1242,19 @@ window.AgentNeural = (() => {
     get detailOpen() {
       return !!(detail && !detail.hidden);
     },
+    /* 视角（调试 / 自动化用） */
+    get view() {
+      return { yaw: S.yaw, pitch: S.pitch, scale: S.scale, panX: S.panX, panY: S.panY };
+    },
+    set view(v) {
+      if (!v) return;
+      if (typeof v.yaw === "number") S.yaw = v.yaw;
+      if (typeof v.pitch === "number") S.pitch = clamp(v.pitch, -1.35, 1.35);
+      if (typeof v.scale === "number") S.scale = clamp(v.scale, 0.2, 3.2);
+      if (typeof v.panX === "number") S.panX = v.panX;
+      if (typeof v.panY === "number") S.panY = v.panY;
+      S.dirty = true;
+    },
     /* 测试与调试：屏幕坐标快照（按画布 rect 过滤后再做鼠标测试） */
     screenPositions() {
       const { w, h } = fitCanvas();
@@ -1080,7 +1270,8 @@ window.AgentNeural = (() => {
             kind: n.info.kind,
             cx: rect.left + x,
             cy: rect.top + y,
-            r: n.r * S.scale,
+            r: n.r * S.scale * n._s,
+            depth: n._d,
           };
         });
     },
