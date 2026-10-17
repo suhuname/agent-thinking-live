@@ -207,6 +207,23 @@
     });
 
     document.getElementById("neuralFit").addEventListener("click", () => window.AgentNeural.fit());
+
+    /* 2D 平面 / 3D 球壳：按钮显示当前模式，点一下就切换（默认 2D） */
+    const dim = document.getElementById("neuralDim");
+    const syncDim = () => {
+      const d3 = window.AgentNeural.mode === "3d";
+      dim.textContent = d3 ? "3D球形" : "2D平面";
+      dim.setAttribute("aria-pressed", String(d3));
+      dim.classList.toggle("is-on", d3);
+      dim.title = d3 ? "当前 3D 球壳：拖动可转头，点击切成 2D 平面" : "当前 2D 平面：拖动可平移，点击切成 3D 球壳";
+    };
+    dim.addEventListener("click", () => {
+      window.AgentNeural.mode = window.AgentNeural.mode === "3d" ? "2d" : "3d"; // 换布局 = 换一张网（内部已重建）
+      syncDim();
+      // 真实数据要按当前会话重新回放一遍：重建后新神经元还没跟消息绑定
+      if (!isScripted()) applySource();
+    });
+    syncDim();
   }
 
   /* 真实数据没有"播放 / 重播"的语义：藏起暂停键，把重播改成「重建」 */
