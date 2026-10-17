@@ -2,9 +2,10 @@
    零依赖自绘 canvas（和 graph.js 同一种做法）。
 
    设计：
-   · 神经元按功能区套成同心球壳 —— 感知最外 / 技能 / 思考 / 运动（读·列·改·其它四条月牙）/ 回传内核，
-     读出「外界 → 思考 → 运动 → 回传」由外向内流；壳内近邻相连 + 跨壳长程通路；
-     回传拆两条回路：内环回思考区，外环回感知区
+   · 神经元按功能区套成同心球壳，**层序 = 使用频率**（最外圈最常用，取自本机 2.8 万条消息实测）：
+     思考 20.7% → 运动 35.6%（读·列·改·其它四条月牙共用一层）→ 感知 3.7% → 技能 0.7% → 回传内核；
+     回传是被动产出（每次工具调用后必有一条结果），不参与频率排序，固定放最内
+   · 壳内近邻相连 + 跨壳长程通路；回传拆两条回路：内环回思考区，外环回感知区
    · 3D：世界坐标 (x,y,z) 落在球壳上，投影 = 旋转矩阵(yaw/pitch) + 透视（近大远小）；
      远侧压暗、按深度排序绘制；每层球壳画两个大圆当线框，帮助读出体积
    · 一次事件 = 在目标区点火，光点沿突触以「距离延迟」传播；神经元有膜电位、阈值、不应期
@@ -13,14 +14,16 @@
    · 悬停只改渲染态、点击出详情卡（沿用 graph.js 的意图延迟 + 迟滞，避免爆闪与自激） */
 
 window.AgentNeural = (() => {
+  /* level = 球壳层序（0 最外）：按使用频率排 —— 本机 28,186 条消息实测的事件占比：
+     思考 20.7% → 运动 35.6%（四子区合计，共用一层）→ 感知 3.7% → 技能 0.7% → 回传（被动产出，不计频，固定内核） */
   const ZONES = {
-    sense: { label: "感知区", color: "--fg-2", level: 0 },
-    skill: { label: "技能区", color: "--skill", level: 1 },
-    think: { label: "思考区", color: "--think", level: 2 },
-    read: { label: "读取文件", color: "--tool", level: 3, group: "运动区" },
-    list: { label: "列出目录", color: "--tool", level: 3, group: "运动区" },
-    edit: { label: "编辑文件", color: "--tool", level: 3, group: "运动区" },
-    other: { label: "其它工具", color: "--tool", level: 3, group: "运动区" },
+    think: { label: "思考区", color: "--think", level: 0 },
+    read: { label: "读取文件", color: "--tool", level: 1, group: "运动区" },
+    list: { label: "列出目录", color: "--tool", level: 1, group: "运动区" },
+    edit: { label: "编辑文件", color: "--tool", level: 1, group: "运动区" },
+    other: { label: "其它工具", color: "--tool", level: 1, group: "运动区" },
+    sense: { label: "感知区", color: "--fg-2", level: 2 },
+    skill: { label: "技能区", color: "--skill", level: 3 },
     out: { label: "回传区", color: "--answer", level: 4 },
   };
 
@@ -47,35 +50,37 @@ window.AgentNeural = (() => {
     answer: { zone: "out", color: "--answer", label: "回答", r: 6.6 },
   };
 
-  /* 世界坐标里的同心球壳：半径按层级由外到内 —— 感知 1.0 → 技能 0.8 → 思考 0.62 → 运动 0.44 → 回传 0.24 */
+  /* 世界坐标里的同心球壳：**层序 = 使用频率**（本机 28,186 条消息实测的事件占比），最外 = 最常用：
+     思考 20.7% → 运动 35.6%（读/列/改/其它四条月牙共用一层）→ 感知 3.7% → 技能 0.7% → 回传内核。
+     回传是"被动产出"（每次工具调用后必有一条结果），不参与频率排序，固定放最内。 */
   const R0 = 360; // 最外层半径（世界单位）
   const SHELL = {
-    sense: { r: 1.0, n: 34 },
-    skill: { r: 0.8, n: 14 },
-    think: { r: 0.62, n: 148 },
+    think: { r: 1.0, n: 170 },
     // 运动区四个子区贴同一层球壳，按方位角切成四条等面积的月牙（lune = 起始方位角，单位度）
-    read: { r: 0.44, n: 20, lune: 0 },
-    list: { r: 0.44, n: 20, lune: 90 },
-    edit: { r: 0.44, n: 20, lune: 180 },
-    other: { r: 0.44, n: 20, lune: 270 },
-    out: { r: 0.24, n: 26 },
+    read: { r: 0.78, n: 20, lune: 0 },
+    list: { r: 0.78, n: 20, lune: 90 },
+    edit: { r: 0.78, n: 20, lune: 180 },
+    other: { r: 0.78, n: 20, lune: 270 },
+    sense: { r: 0.58, n: 40 },
+    skill: { r: 0.4, n: 18 },
+    out: { r: 0.23, n: 20 },
   };
 
   /* 区名按球壳半径排一圈：同心层里"方向"没有语义，"第几层"才是含义，
      所以名字钉在各自圆盘的边上（不跟旋转跑），永远不挤到球心；
      ang = 屏幕极角（度，0°=右、90°=下），r = 该壳半径占外层的比例 */
   const LABEL_RING = {
-    sense: { ang: 200, r: 1.0 },
-    skill: { ang: 310, r: 0.8 },
-    think: { ang: 166, r: 0.62 },
-    out: { ang: 90, r: 0.24 },
+    think: { ang: 200, r: 1.0, pct: "20.7%" },
+    sense: { ang: 165, r: 0.58, pct: "3.7%" },
+    skill: { ang: 300, r: 0.4, pct: "0.7%" },
+    out: { ang: 90, r: 0.23, pct: "39.4% · 被动" },
   };
   const MOTOR_RING = {
-    group: { ang: 286, r: 0.44 },
-    read: { ang: 330, r: 0.44 },
-    list: { ang: 358, r: 0.44 },
-    edit: { ang: 22, r: 0.44 },
-    other: { ang: 50, r: 0.44 },
+    group: { ang: 286, r: 0.78, pct: "35.6%" },
+    read: { ang: 330, r: 0.78, pct: "5.0%" },
+    list: { ang: 358, r: 0.78, pct: "0.8%" },
+    edit: { ang: 22, r: 0.78, pct: "7.5%" },
+    other: { ang: 50, r: 0.78, pct: "22.3%" },
   };
 
   /* 传播偏好：从哪里来，往哪里去更像"思考的流向" */
@@ -94,6 +99,7 @@ window.AgentNeural = (() => {
   const MAX_HOP = 9; // 一次点火最多跳几层（防止全网炸开）
   const SPIKE_CAP = 420; // 在途脉冲上限（性能闸）
   const TRAIL_MS = 4200; // 余晖停留时间
+  const HEAT_MS = 1600; // 区被触发后，区名/轮廓高亮衰减的时间
   const TAU = 640; // 膜电位泄漏常数
 
   const S = {
@@ -107,6 +113,7 @@ window.AgentNeural = (() => {
     spikes: [],
     trails: [],
     pending: new Map(), // 工具/技能执行中：nodeId → {neuron, next, color}
+    zoneHeat: {}, // 区 → {at, amp}：这一区刚被触发过，区名/轮廓要亮起来
     selected: null,
     hover: null,
     active: null,
@@ -156,6 +163,8 @@ window.AgentNeural = (() => {
     css.fg = pick("--fg");
     css.muted = pick("--muted");
     css.panel = pick("--panel");
+    // 3D 网格（经纬线 + 壳层轮廓）单独一个中性色：结构线不跟节点/突触的区色混在一起
+    css.shellGrid = pick("--grid-3d") || pick("--fg-2");
   }
 
   /* ---------- 画布（小数 DPR 必须按取整后的像素比较，见 pitfalls exp-006） ---------- */
@@ -379,7 +388,22 @@ window.AgentNeural = (() => {
     return pref.includes(toZone) ? 1.9 : 0.72;
   }
 
-  function fire(n, amp, color, hop) {
+  /* 区级热度：这一区刚被触发过 → 区名和那层轮廓亮一下，1.6s 内衰减。
+     跟着虚拟时钟走，所以暂停/播完时高亮也一起停住，不会假装还在动。 */
+  function heat(zone, amp, t) {
+    if (!zone) return;
+    const cur = S.zoneHeat[zone];
+    const left = cur ? cur.amp * clamp(1 - (t - cur.at) / HEAT_MS, 0, 1) : 0;
+    S.zoneHeat[zone] = { at: t, amp: Math.max(left, clamp(amp, 0, 1)) };
+  }
+
+  function zoneHeatOf(zone, t) {
+    const h = S.zoneHeat[zone];
+    if (!h) return 0;
+    return clamp((1 - (t - h.at) / HEAT_MS) * h.amp, 0, 1);
+  }
+
+  function fire(n, amp, color, hop, quiet) {
     const t = clock();
     if (!n || t < n.refrUntil) return false;
     n.m = 0;
@@ -390,6 +414,8 @@ window.AgentNeural = (() => {
     n.fireColor = color || css[n.zone];
     S.fires += 1;
     trail(n, t);
+    // 只有"事件真的落在这个区"才点亮区名（hop=0）；级联传播不点，否则满屏区名一直亮着就没了指示意义
+    if (!quiet && !hop) heat(n.zone, 0.68 + n.fireAmp * 0.22, t);
 
     if (hop >= MAX_HOP || S.spikes.length > SPIKE_CAP) return true;
 
@@ -458,6 +484,7 @@ window.AgentNeural = (() => {
     const amp = base + (kind === "skill" ? 0.5 : 0) + (kind === "answer" ? 0.25 : 0);
 
     fire(focus, amp, color, 0);
+    heat(zone, 1, t); // 事件直接落在这个区：区名要最亮
 
     // 一次事件不是单点：目标区里顺手带亮两颗邻居
     const sib = focus.neighbors
@@ -508,6 +535,7 @@ window.AgentNeural = (() => {
     S.spikes = [];
     S.trails = [];
     S.pending.clear();
+    S.zoneHeat = {};
     S.selected = null;
     S.hover = null;
     S.active = null;
@@ -577,7 +605,7 @@ window.AgentNeural = (() => {
         S.ambient = 0;
         const pool = S.zoneIndex.think || [];
         const n = pool[Math.floor(Math.random() * pool.length)];
-        if (n && t >= n.refrUntil) fire(n, 0.42, css.think, 6);
+        if (n && t >= n.refrUntil) fire(n, 0.42, css.think, 6, true);
       }
     }
 
@@ -657,56 +685,113 @@ window.AgentNeural = (() => {
   function drawShells(ctx, w, h) {
     ctx.globalCompositeOperation = "lighter";
     ctx.lineWidth = 1;
-    SHELLS_R.forEach(({ r, zone }, idx) => {
-      const hex = css[zone] || css.think;
+    const gridHex = css.shellGrid || css.fg;
+    SHELLS_R.forEach(({ r }, idx) => {
       const R = r * R0;
-      // 最外层多画一条正对镜头的大圆，球面感更明确；内层两条就够，不然糊成毛球
+      // 两个正交大圆（最外层三个）：前半球亮、后半球暗，才有纵深；颜色统一用中性网格色
       const axes = idx === 0 ? [0, 1, 2] : [0, 1];
       axes.forEach((axis) => {
         const { front, back } = ringPath(R, axis, S.scale, w, h);
-        ctx.strokeStyle = rgba(hex, 0.14);
+        ctx.strokeStyle = rgba(gridHex, 0.18);
         ctx.stroke(front);
-        ctx.strokeStyle = rgba(hex, 0.06);
+        ctx.strokeStyle = rgba(gridHex, 0.08);
         ctx.stroke(back);
       });
     });
     ctx.globalCompositeOperation = "source-over";
   }
 
-  function labelPill(ctx, text, x, y, hex, alpha, align = "center", font = "11px ui-monospace, monospace") {
+  /* 每层球壳的轮廓圆：画在突触之后、神经元之前 —— 压在网格上才数得清有几层。
+     半径取透视下球剪影的闭式解：R·CAM_D/√(CAM_D²−R²)（比 R 略大，约 1%） */
+  function drawShellRings(ctx, w, h) {
+    ctx.globalCompositeOperation = "lighter";
+    const cx = w / 2 + S.panX;
+    const cy = originY(h) + S.panY;
+    const t = clock();
+    SHELLS_R.forEach(({ r, zone }, idx) => {
+      const R = r * R0;
+      const persp = CAM_D / Math.sqrt(Math.max(1, CAM_D * CAM_D - R * R));
+      // 这一区刚被触发 → 它那圈轮廓跟着亮（运动层取四条月牙里最热的）；颜色同样走中性网格色
+      const hot = zone === "read" ? Math.max(...MOTOR_ZONES.map((z) => zoneHeatOf(z, t))) : zoneHeatOf(zone, t);
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * S.scale * persp, 0, Math.PI * 2);
+      ctx.strokeStyle = rgba(css.shellGrid || css.fg, (idx === 0 ? 0.32 : 0.26) + hot * 0.5);
+      ctx.lineWidth = (idx === 0 ? 1.4 : 1) + hot * 0.9;
+      ctx.stroke();
+    });
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  /* 区名胶囊。hot > 0 时整块亮起来：底色透出区色、加描边、文字发光、胶囊略微放大 */
+  function labelPill(ctx, text, x, y, hex, alpha, align = "center", font = "11px ui-monospace, monospace", hot = 0) {
     if (alpha <= 0.03) return;
     ctx.font = font;
     const tw = ctx.measureText(text).width;
     const bx = align === "center" ? x - tw / 2 : align === "right" ? x - tw : x;
-    ctx.fillStyle = "rgba(8,9,11,0.58)";
+    const grow = 2 * hot;
     ctx.beginPath();
-    ctx.roundRect(bx - 5, y - 10, tw + 10, 15, 3);
+    ctx.roundRect(bx - 5 - grow, y - 10 - grow * 0.7, tw + 10 + grow * 2, 15 + grow * 1.4, 3 + grow * 0.5);
+    ctx.fillStyle = "rgba(8,9,11,0.82)";
     ctx.fill();
-    ctx.fillStyle = rgba(hex, alpha);
+    if (hot > 0.02) {
+      ctx.shadowColor = rgba(hex, 0.75 * hot);
+      ctx.shadowBlur = 14 * hot;
+      ctx.fillStyle = rgba(hex, 0.26 * hot);
+      ctx.fill();
+      ctx.strokeStyle = rgba(hex, 0.85 * hot);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.shadowColor = "transparent";
+    }
+    ctx.fillStyle = rgba(hex, clamp(alpha + (1 - alpha) * hot, 0, 1));
+    if (hot > 0.12) {
+      ctx.shadowColor = rgba(hex, 0.85 * hot);
+      ctx.shadowBlur = 11 * hot;
+    }
     ctx.textAlign = align;
     ctx.fillText(text, x, y + 1);
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
     ctx.textAlign = "left";
   }
 
   /* 名字钉在球壳圆盘的边上：半径本身就说明了它在第几层，方向随旋转跑反而会挤成一团 */
-  function ringLabel(ctx, w, h, text, angDeg, radiusWorld, hex, alphaBase, align = "center", font = "11px ui-monospace, monospace") {
+  function ringLabel(ctx, w, h, text, angDeg, radiusWorld, hex, alphaBase, hot = 0, align = "center", font = "11px ui-monospace, monospace") {
     const a = (angDeg * Math.PI) / 180;
     const R = radiusWorld * S.scale * 1.05;
     const x = w / 2 + S.panX + Math.cos(a) * R;
     const y = originY(h) + S.panY + Math.sin(a) * R;
-    labelPill(ctx, text, x, y, hex, alphaBase, align, font);
+    labelPill(ctx, text, x, y, hex, alphaBase, align, font, hot);
   }
 
   function drawZoneLabels(ctx, w, h) {
+    const t = clock();
+    const items = [];
     Object.entries(LABEL_RING).forEach(([zone, cfg]) => {
-      ringLabel(ctx, w, h, ZONES[zone].label, cfg.ang, cfg.r * R0, css[zone], 0.8);
+      items.push({ text: `${ZONES[zone].label} ${cfg.pct}`, cfg, hex: css[zone], alpha: 0.9, hot: zoneHeatOf(zone, t) });
     });
-    // 运动区：组标题 + 四条月牙各自的名字，沿这层圆盘的右半边排开（竖间距 45px 左右）
-    ringLabel(ctx, w, h, "运 动 区", MOTOR_RING.group.ang, MOTOR_RING.group.r * R0, css.other, 0.85);
+    // 运动区：一条组标题 + 四条月牙的名字；组标题跟着最热的子区一起亮
+    const motorHot = Math.max(...MOTOR_ZONES.map((z) => zoneHeatOf(z, t)));
+    items.push({
+      text: `运 动 区 ${MOTOR_RING.group.pct}（工具合计）`,
+      cfg: MOTOR_RING.group,
+      hex: css.other,
+      alpha: 0.9,
+      hot: motorHot,
+    });
     MOTOR_ZONES.forEach((zone) => {
-      const cfg = MOTOR_RING[zone];
-      ringLabel(ctx, w, h, ZONES[zone].label, cfg.ang, cfg.r * R0, css[zone], 0.74);
+      items.push({
+        text: `${ZONES[zone].label} ${MOTOR_RING[zone].pct}`,
+        cfg: MOTOR_RING[zone],
+        hex: css[zone],
+        alpha: 0.82,
+        hot: zoneHeatOf(zone, t),
+      });
     });
+    // 热的最后画：被点着的那条不会被别的胶囊压住
+    items.sort((a, b) => a.hot - b.hot);
+    items.forEach((it) => ringLabel(ctx, w, h, it.text, it.cfg.ang, it.cfg.r * R0, it.hex, it.alpha, it.hot));
   }
 
   /* 突触中点往外推多少：短边弯得明显一点，长边几乎笔直 */
@@ -728,7 +813,6 @@ window.AgentNeural = (() => {
     for (const n of S.nodes) toScreen(n, w, h);
 
     drawShells(ctx, w, h);
-    drawZoneLabels(ctx, w, h);
 
     /* 突触：按深度排序，远的先画、更淡；中点从球心往外推一点，弯成绕球的弧 */
     const arcs = [];
@@ -752,9 +836,9 @@ window.AgentNeural = (() => {
       );
       // 回传回路用自己的颜色，并且更显眼（内环=思考青，外环=感知灰）
       const strokeKey = e.circuit === "inner" ? "think" : e.circuit === "outer" ? "sense" : a.zone;
-      let alpha = (0.03 + e.w * 0.05 + Math.min(0.32, hot * 0.2) + e.act * 0.2) * depthFade(d);
-      if (e.circuit) alpha = Math.min(0.4, alpha * 1.5 + 0.02);
-      if (alpha < 0.026) continue;
+      let alpha = (0.024 + e.w * 0.042 + Math.min(0.26, hot * 0.17) + e.act * 0.18) * depthFade(d);
+      if (e.circuit) alpha = Math.min(0.4, alpha * 1.6 + 0.02);
+      if (alpha < 0.02) continue;
       ctx.strokeStyle = rgba(css[strokeKey] || css.think, alpha);
       ctx.lineWidth = 0.6 + e.w * 0.45 + e.act * 0.7 + (e.circuit ? 0.3 : 0);
       ctx.beginPath();
@@ -762,6 +846,9 @@ window.AgentNeural = (() => {
       ctx.quadraticCurveTo(mx, my, b._sx, b._sy);
       ctx.stroke();
     }
+
+    // 壳层轮廓压在网格之上：越密的地方越需要这条"层线"来读数
+    drawShellRings(ctx, w, h);
 
     /* 余晖：这一轮走过的路（数秒不散） */
     ctx.globalCompositeOperation = "lighter";
@@ -776,7 +863,7 @@ window.AgentNeural = (() => {
         y,
         24 * (0.7 + p.amp) * (0.5 + age * 0.6) * pr.s,
         colorKeyOf(p.color),
-        p.amp * (1 - age) * 0.34 * depthFade(pr.d)
+        p.amp * (1 - age) * 0.28 * depthFade(pr.d)
       );
     }
 
@@ -849,7 +936,8 @@ window.AgentNeural = (() => {
           y,
           r * (4 + hot * 2.4 + flash * 2),
           colorKeyOf(n.fireColor || n.inColor || base),
-          (hot * 0.28 + flash * 0.55) * fade
+          // 内核只有几颗挨在一起，光晕再打满就糊成一片白
+          (hot * 0.28 + flash * 0.55) * fade * (n.zone === "out" ? 0.72 : 1)
         );
         ctx.globalCompositeOperation = "source-over";
       }
@@ -878,6 +966,9 @@ window.AgentNeural = (() => {
       }
     }
 
+    // 区名最后画：压在网格和节点之上，字才不会被连线吃掉
+    drawZoneLabels(ctx, w, h);
+
     // HUD
     ctx.font = "11px ui-monospace, monospace";
     ctx.fillStyle = "rgba(255,255,255,0.34)";
@@ -890,7 +981,7 @@ window.AgentNeural = (() => {
     ctx.fillText("拖动旋转 · Shift+拖动平移 · 滚轮缩放 · 悬停看简写 · 点击看详情", w - 10, h - 12);
     ctx.textAlign = "center";
     ctx.fillStyle = "rgba(255,255,255,0.26)";
-    ctx.fillText("同心球壳：感知最外 → 思考 → 运动 → 回传内核（内环回思考 · 外环回感知）", w / 2, h - 12);
+    ctx.fillText("球壳由外到内 = 使用频率：思考 → 运动 → 感知 → 技能 → 回传内核（回传是被动产出，不计频）", w / 2, h - 12);
     ctx.textAlign = "left";
   }
 
@@ -1279,6 +1370,21 @@ window.AgentNeural = (() => {
       const by = {};
       S.nodes.forEach((n) => (by[n.zone] = (by[n.zone] || 0) + 1));
       return by;
+    },
+    /* 层序自检用：区 → 球壳半径比例 / 颗数 / 世界半径 */
+    layers() {
+      const out = {};
+      Object.entries(SHELL).forEach(([zone, box]) => {
+        out[zone] = { ratio: box.r, world: box.r * R0, n: box.n, level: ZONES[zone].level };
+      });
+      return out;
+    },
+    /* 区高亮自检用：此刻各区热度 0..1（区被触发后 1.6s 内衰减） */
+    zoneHeat() {
+      const t = clock();
+      const out = {};
+      Object.keys(SHELL).forEach((z) => (out[z] = +zoneHeatOf(z, t).toFixed(3)));
+      return out;
     },
     /* 接入真实数据用：一次事件 → 一次点火（渲染层不用改，见 exp-002 的接口约定） */
     ingestStep(ev) {

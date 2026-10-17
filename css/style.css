@@ -22,6 +22,8 @@
   --err: #c9736a;
 
   --grid: rgba(255, 255, 255, 0.035);
+  /* 3D 球壳的经纬线/轮廓：独立中性色，专门区别于节点与突触的区色 */
+  --grid-3d: #7f95b3;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
